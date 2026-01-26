@@ -37,8 +37,30 @@ export default function UpdateLoansScreen({ navigation }) {
   const fetchMembers = async () => {
     setMembersLoading(true);
     try {
-      const res = await membersAPI.getAll();
-      setMembers(res.data);
+      // Fetch all members and all loans once, then show only members with ACTIVE loans.
+      const [membersRes, loansRes] = await Promise.all([
+        membersAPI.getAll(),
+        loansAPI.getAll()
+      ]);
+
+      const activeLoans = (loansRes.data || []).filter(loan => loan.status === 'active');
+      const memberIdsWithActiveLoans = new Set(
+        activeLoans
+          .map(loan => {
+            if (typeof loan.memberId === 'object' && loan.memberId !== null) {
+              return loan.memberId._id || loan.memberId;
+            }
+            return loan.memberId;
+          })
+          .filter(Boolean)
+          .map(id => id.toString())
+      );
+
+      const filteredMembers = (membersRes.data || []).filter(member =>
+        memberIdsWithActiveLoans.has(member._id.toString())
+      );
+
+      setMembers(filteredMembers);
     } catch (e) {
       setMembers([]);
     } finally {
