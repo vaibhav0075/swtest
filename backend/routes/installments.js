@@ -112,55 +112,60 @@ router.get('/my-installments', authenticate, async (req, res) => {
 
 // Create new installment
 router.post('/', authenticate, isAdmin, async (req, res) => {
+  const session = await mongoose.startSession();
   try {
     const { memberId, amount, date } = req.body;
 
-    // Create installment
-    const installment = new Installment({
-      memberId,
-      amount,
-      date: date || new Date(),
-      recordedBy: req.user.userId
-    });
+    let createdInstallment;
 
-    await installment.save();
-
-    // Update member's investment balance
-    const member = await User.findById(memberId);
-    if (member) {
-      member.investmentBalance += amount;
-      await member.save();
-
-      // Create investment history entry
-      const investmentHistory = new InvestmentHistory({
+    // Transaction for data integrity: installment + member balance + fund + history
+    await session.withTransaction(async () => {
+      // Create installment
+      const [installment] = await Installment.create([{
         memberId,
         amount,
-        type: 'installment',
-        refId: installment._id.toString()
-      });
-      await investmentHistory.save();
-    }
+        date: date || new Date(),
+        recordedBy: req.user.userId
+      }], { session });
+      createdInstallment = installment;
 
-    // Update total fund
-    const fund = await Fund.findOne();
-    if (fund) {
-      fund.totalFund = (fund.totalFund || 0) + amount;
-      await fund.save();
-    } else {
-      // Create new fund if it doesn't exist
-      const newFund = new Fund({
-        totalFund: amount
-      });
-      await newFund.save();
-    }
+      // Update member's investment balance
+      const member = await User.findById(memberId).session(session);
+      if (member) {
+        member.investmentBalance = Number(member.investmentBalance || 0) + Number(amount);
+        await member.save({ session });
 
-    // Log the transaction
-    await Logger.logInstallmentCreated(installment, req.user.userId);
+        // Create investment history entry
+        await InvestmentHistory.create([{
+          memberId,
+          amount,
+          type: 'installment',
+          refId: installment._id.toString()
+        }], { session });
+      }
 
-    res.status(201).json(installment);
+      // Update total fund
+      const fund = await Fund.findOne().session(session);
+      if (fund) {
+        fund.totalFund = Number(fund.totalFund || 0) + Number(amount);
+        await fund.save({ session });
+      } else {
+        // Create new fund if it doesn't exist
+        await Fund.create([{
+          totalFund: Number(amount)
+        }], { session });
+      }
+    });
+
+    // Log the transaction (kept outside DB transaction; existing behavior/logging only on success)
+    await Logger.logInstallmentCreated(createdInstallment, req.user.userId);
+
+    res.status(201).json(createdInstallment);
   } catch (error) {
     console.error('Installment creation error:', error);
     res.status(500).json({ message: 'Server error' });
+  } finally {
+    session.endSession();
   }
 });
 

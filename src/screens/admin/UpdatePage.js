@@ -2,7 +2,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import { installmentsAPI, membersAPI } from '../../services/api';
+import { installmentsAPI, loansAPI, membersAPI } from '../../services/api';
 
 export default function UpdatePage({ navigation }) {
   const [selectedMember, setSelectedMember] = useState(null);
@@ -12,6 +12,7 @@ export default function UpdatePage({ navigation }) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showMemberModal, setShowMemberModal] = useState(false);
   const [members, setMembers] = useState([]);
+  const [membersWithActiveLoans, setMembersWithActiveLoans] = useState([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdatedMember, setLastUpdatedMember] = useState(null);
@@ -25,10 +26,36 @@ export default function UpdatePage({ navigation }) {
   const fetchMembers = async () => {
     setMembersLoading(true);
     try {
-      const res = await membersAPI.getAll();
-      setMembers(res.data);
+      // Keep `members` as-is for existing screen logic (e.g., Quick Add count),
+      // but show only members with ACTIVE loans in the member dropdown.
+      const [membersRes, loansRes] = await Promise.all([
+        membersAPI.getAll(),
+        loansAPI.getAll()
+      ]);
+
+      setMembers(membersRes.data);
+
+      const activeLoans = (loansRes.data || []).filter(loan => loan.status === 'active');
+      const memberIdsWithActiveLoans = new Set(
+        activeLoans
+          .map(loan => {
+            if (typeof loan.memberId === 'object' && loan.memberId !== null) {
+              return loan.memberId._id || loan.memberId;
+            }
+            return loan.memberId;
+          })
+          .filter(Boolean)
+          .map(id => id.toString())
+      );
+
+      const filteredMembers = (membersRes.data || []).filter(member =>
+        memberIdsWithActiveLoans.has(member._id.toString())
+      );
+
+      setMembersWithActiveLoans(filteredMembers);
     } catch (e) {
       setMembers([]);
+      setMembersWithActiveLoans([]);
     } finally {
       setMembersLoading(false);
     }
@@ -226,7 +253,7 @@ export default function UpdatePage({ navigation }) {
               <ActivityIndicator size="large" color="#007AFF" />
             ) : (
               <FlatList
-                data={members}
+                data={membersWithActiveLoans}
                 keyExtractor={item => item._id}
                 renderItem={renderMemberItem}
                 contentContainerStyle={{ paddingBottom: 20 }}
