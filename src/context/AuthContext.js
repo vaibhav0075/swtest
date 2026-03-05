@@ -67,6 +67,11 @@ export const AuthProvider = ({ children }) => {
       if (!enabled) {
         await AsyncStorage.removeItem('biometricCredentials');
         setStoredCredentials(null);
+      } else if (phone && tempPassword) {
+        // If enabling and we have current credentials, store them immediately
+        const credentials = { phone, password: tempPassword };
+        await AsyncStorage.setItem('biometricCredentials', JSON.stringify(credentials));
+        setStoredCredentials(credentials);
       }
     } catch (error) {
       console.error('Error saving biometric preference:', error);
@@ -147,13 +152,13 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       setLoading(true);
-      await AsyncStorage.multiRemove(['user', 'token', 'accounts', 'biometricCredentials']);
+      await AsyncStorage.multiRemove(['user', 'token', 'accounts']);
       setUser(null);
       setAccounts([]);
       setSelectedAccount(null);
       setPhone(null);
       setTempPassword(null);
-      setStoredCredentials(null);
+      // We do NOT clear biometricCredentials here so that they remain for the next login
       return true;
     } catch (error) {
       console.error('Logout error:', error);
