@@ -28,6 +28,7 @@ import SettingsScreen from '../screens/admin/SettingsScreen';
 import ShareValueGrowthScreen from '../screens/admin/ShareValueGrowthScreen';
 import UpdateLoansScreen from '../screens/admin/UpdateLoansScreen';
 import UpdatePage from '../screens/admin/UpdatePage';
+import AppSettings from '../screens/AppSettings';
 import GiveLoanScreen from '../screens/GiveLoanScreen';
 import PaymentHistory from '../screens/member/PaymentHistory';
 import MembersScreen from '../screens/MembersScreen';
@@ -91,6 +92,7 @@ const SettingsStack = () => (
   <Stack.Navigator>
     <Stack.Screen name="SettingsMain" component={SettingsScreen} options={{ headerShown: false }} />
     <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} options={{ headerShown: false }} />
+    <Stack.Screen name="AppSettings" component={AppSettings} options={{ headerShown: false }} />
     <Stack.Screen name="ManageMembers" component={ManageMembers} options={{ headerShown: false }} />
     <Stack.Screen name="AddMember" component={AddMember} options={{ headerShown: false }} />
     <Stack.Screen name="About" component={AboutScreen} options={{ headerShown: false }} />

@@ -10,6 +10,7 @@ import MemberDashboard from '../screens/member/MemberDashboard';
 import MemberEarnings from '../screens/member/MemberEarnings';
 import MemberLoans from '../screens/member/MemberLoans';
 import MemberSettings from '../screens/member/MemberSettings';
+import AppSettings from '../screens/AppSettings';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
@@ -18,6 +19,7 @@ const SettingsStack = () => (
   <Stack.Navigator screenOptions={{ headerShown: false }}>
     <Stack.Screen name="SettingsMain" component={MemberSettings} />
     <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
+    <Stack.Screen name="AppSettings" component={AppSettings} />
     <Stack.Screen name="About" component={AboutScreen} />
   </Stack.Navigator>
 );

@@ -6,6 +6,7 @@ import {
     Text,
     TouchableOpacity,
     View,
+    Switch
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useAuth } from '../../context/AuthContext';
@@ -81,7 +82,7 @@ export default function SettingsScreen({ navigation }) {
         // Handle notifications settings
         break;
       case 'appSettings':
-        // Handle app settings
+        navigation.navigate('AppSettings');
         break;
       case 'about':
         navigation.navigate('About');
@@ -143,6 +144,7 @@ export default function SettingsScreen({ navigation }) {
 
       <View style={styles.section}>
         {settingsItems.map(renderSettingItem)}
+        
         {user?.role === 'admin' && (
           <TouchableOpacity
             style={styles.settingItem}

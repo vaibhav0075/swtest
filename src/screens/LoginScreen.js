@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
     Alert,
     RefreshControl,
@@ -8,15 +8,82 @@ import {
     TextInput,
     TouchableOpacity,
     View,
+    Switch
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { useAuth } from '../context/AuthContext';
 
 export default function LoginScreen({ navigation }) {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const { loginByPhone, loading } = useAuth();
+  const { loginByPhone, loading, biometricsEnabled, toggleBiometrics, storedCredentials } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    if (biometricsEnabled && storedCredentials) {
+      setPhone(storedCredentials.phone);
+      setPassword(storedCredentials.password);
+      checkBiometricAvailability();
+    }
+  }, [biometricsEnabled, storedCredentials]);
+
+  const checkBiometricAvailability = async () => {
+    const hasHardware = await LocalAuthentication.hasHardwareAsync();
+    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+    if (hasHardware && isEnrolled) {
+      handleBiometricLogin();
+    }
+  };
+
+  const handleToggleBiometrics = async (value) => {
+    if (value) {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      if (!hasHardware) {
+        Alert.alert('Error', 'Your device does not support biometric authentication');
+        return;
+      }
+      if (!isEnrolled) {
+        Alert.alert('Error', 'No biometrics enrolled. Please set up fingerprint or face lock in your device settings.');
+        return;
+      }
+      
+      // If turning ON, we might want to prompt login first to get credentials, 
+      // but the user's request is to have it prompt automatically if already enabled.
+      // If credentials aren't stored yet, they will be stored on next successful login.
+    }
+    toggleBiometrics(value);
+  };
+
+  const handleBiometricLogin = async () => {
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: 'Login with your fingerprint or face',
+      });
+      if (result.success) {
+        // If we have stored credentials, use them to log in
+        if (storedCredentials) {
+          try {
+            await loginByPhone(storedCredentials.phone, storedCredentials.password);
+          } catch (error) {
+            Alert.alert('Error', 'Biometric login failed. Please enter your credentials manually.');
+          }
+        } else if (phone && password) {
+          // If credentials are typed but not stored yet, use them
+          handleLogin();
+        } else {
+          Alert.alert('Credentials Required', 'Please enter your phone and password once to link them for biometric login.');
+        }
+      } else {
+        // Only alert if it wasn't a manual cancel or similar
+        // Alert.alert('Error', 'Biometric authentication failed');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'An error occurred during biometric authentication');
+    }
+  };
 
   const handleLogin = async () => {
     if (!phone || !password) {
@@ -93,6 +160,26 @@ export default function LoginScreen({ navigation }) {
             {loading ? 'Logging in...' : 'Login'}
           </Text>
         </TouchableOpacity>
+
+        <View style={styles.biometricToggleContainer}>
+          <Text style={styles.biometricToggleText}>Enable Biometric Login</Text>
+          <Switch
+            value={biometricsEnabled}
+            onValueChange={handleToggleBiometrics}
+            trackColor={{ false: '#767577', true: '#81b0ff' }}
+            thumbColor={biometricsEnabled ? '#007AFF' : '#f4f3f4'}
+          />
+        </View>
+
+        {biometricsEnabled && (
+          <TouchableOpacity
+            style={[styles.button, styles.biometricButton]}
+            onPress={handleBiometricLogin}
+          >
+            <Ionicons name="finger-print" size={24} color="white" />
+            <Text style={[styles.buttonText, { marginLeft: 10 }]}>Login with Biometrics</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </ScrollView>
   );
@@ -157,5 +244,24 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  biometricToggleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 15,
+    paddingHorizontal: 5,
+    marginBottom: 10,
+  },
+  biometricToggleText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  biometricButton: {
+    backgroundColor: '#007AFF',
+    marginTop: 10,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 }); 

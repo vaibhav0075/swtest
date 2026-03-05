@@ -6,6 +6,7 @@ import {
     Text,
     TouchableOpacity,
     View,
+    Switch
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useAuth } from '../../context/AuthContext';
@@ -53,7 +54,7 @@ export default function MemberSettings({ navigation }) {
         // Handle notifications settings
         break;
       case 'appSettings':
-        // Handle app settings
+        navigation.navigate('AppSettings');
         break;
       case 'about':
         navigation.navigate('About');

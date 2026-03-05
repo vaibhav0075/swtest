@@ -20,6 +20,8 @@ export const AuthProvider = ({ children }) => {
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [phone, setPhone] = useState(null);
   const [tempPassword, setTempPassword] = useState(null);
+  const [biometricsEnabled, setBiometricsEnabled] = useState(false);
+  const [storedCredentials, setStoredCredentials] = useState(null);
 
   // Check for stored user data on app start
   useEffect(() => {
@@ -27,6 +29,9 @@ export const AuthProvider = ({ children }) => {
       try {
         const storedUser = await AsyncStorage.getItem('user');
         const storedAccounts = await AsyncStorage.getItem('accounts');
+        const storedBiometrics = await AsyncStorage.getItem('biometricsEnabled');
+        const credentialsStr = await AsyncStorage.getItem('biometricCredentials');
+        
         if (storedUser) {
           const parsedUser = JSON.parse(storedUser);
           // Ensure _id is set from id
@@ -39,6 +44,12 @@ export const AuthProvider = ({ children }) => {
           const parsedAccounts = JSON.parse(storedAccounts);
           setAccounts(parsedAccounts);
         }
+        if (storedBiometrics !== null) {
+          setBiometricsEnabled(JSON.parse(storedBiometrics));
+        }
+        if (credentialsStr) {
+          setStoredCredentials(JSON.parse(credentialsStr));
+        }
       } catch (error) {
         console.error('Error loading stored user:', error);
       } finally {
@@ -48,6 +59,19 @@ export const AuthProvider = ({ children }) => {
 
     loadStoredUser();
   }, []);
+
+  const toggleBiometrics = async (enabled) => {
+    try {
+      await AsyncStorage.setItem('biometricsEnabled', JSON.stringify(enabled));
+      setBiometricsEnabled(enabled);
+      if (!enabled) {
+        await AsyncStorage.removeItem('biometricCredentials');
+        setStoredCredentials(null);
+      }
+    } catch (error) {
+      console.error('Error saving biometric preference:', error);
+    }
+  };
 
   const login = async (memberId, password) => {
     try {
@@ -101,6 +125,13 @@ export const AuthProvider = ({ children }) => {
           setUser(userData);
           setAccounts(accList);
           setTempPassword(password); // Store password temporarily
+          
+          if (biometricsEnabled) {
+            const credentials = { phone: phoneNumber, password };
+            await AsyncStorage.setItem('biometricCredentials', JSON.stringify(credentials));
+            setStoredCredentials(credentials);
+          }
+          
           return userData;
         }
       }
@@ -116,12 +147,13 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       setLoading(true);
-      await AsyncStorage.multiRemove(['user', 'token', 'accounts']);
+      await AsyncStorage.multiRemove(['user', 'token', 'accounts', 'biometricCredentials']);
       setUser(null);
       setAccounts([]);
       setSelectedAccount(null);
       setPhone(null);
       setTempPassword(null);
+      setStoredCredentials(null);
       return true;
     } catch (error) {
       console.error('Logout error:', error);
@@ -142,6 +174,9 @@ export const AuthProvider = ({ children }) => {
     setAccounts,
     phone,
     tempPassword,
+    biometricsEnabled,
+    storedCredentials,
+    toggleBiometrics,
     logout,
   };
 
