@@ -95,6 +95,8 @@ router.post('/login-by-phone', async (req, res) => {
       }
       
       if (!isMatch) {
+        // Log failed login attempt
+        await Logger.logUserLogin(selectedUser, 'failed_login', req.ip, req.get('User-Agent'), false, 'Invalid password');
         return res.status(401).json({ message: 'Invalid password' });
       }
       
@@ -107,6 +109,9 @@ router.post('/login-by-phone', async (req, res) => {
         process.env.JWT_SECRET || 'your-secret-key',
         { expiresIn: '24h' }
       );
+      
+      // Log successful login
+      await Logger.logUserLogin(selectedUser, 'login', req.ip, req.get('User-Agent'), true);
     }
     
     // Prepare accounts list (do not include password)

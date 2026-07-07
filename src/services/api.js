@@ -150,4 +150,13 @@ export const maintenanceAPI = {
   setStatus: (enabled, message) => api.post('/maintenance', { enabled, message }),
 };
 
+// Logs API
+export const logsAPI = {
+  getTransactions: (params) => api.get('/logs/transactions', { params }),
+  getLogins: (params) => api.get('/logs/logins', { params }),
+  getMembers: (params) => api.get('/logs/members', { params }),
+  getStatistics: (params) => api.get('/logs/statistics', { params }),
+  exportLogs: (type, params) => api.get(`/logs/export/${type}`, { params, responseType: 'blob' }),
+};
+
 export default api; 

@@ -123,6 +123,10 @@ router.get('/logins', authenticate, isAdmin, async (req, res) => {
 
     const total = await LoginLog.countDocuments(query);
 
+    // Calculate login stats instead of balance summary
+    const successCount = logs.filter(log => log.success).length;
+    const failureCount = logs.filter(log => !log.success).length;
+
     res.json({
       logs,
       pagination: {
@@ -132,9 +136,11 @@ router.get('/logins', authenticate, isAdmin, async (req, res) => {
         hasNext: skip + logs.length < total,
         hasPrev: page > 1
       },
-      balanceSummary: {
-        totalFundImpact: logs.reduce((sum, log) => sum + (log.fundImpact || 0), 0),
-        averageFundBalance: logs.length > 0 ? logs.reduce((sum, log) => sum + (log.balancesAfter?.fundBalance || 0), 0) / logs.length : 0
+      loginStats: {
+        totalLogins: logs.length,
+        successCount,
+        failureCount,
+        successRate: logs.length > 0 ? (successCount / logs.length * 100).toFixed(2) : 0
       }
     });
   } catch (error) {
@@ -188,6 +194,12 @@ router.get('/members', authenticate, isAdmin, async (req, res) => {
 
     const total = await MemberLog.countDocuments(query);
 
+    // Calculate member activity stats instead of balance summary
+    const actionCounts = logs.reduce((acc, log) => {
+      acc[log.action] = (acc[log.action] || 0) + 1;
+      return acc;
+    }, {});
+
     res.json({
       logs,
       pagination: {
@@ -197,9 +209,9 @@ router.get('/members', authenticate, isAdmin, async (req, res) => {
         hasNext: skip + logs.length < total,
         hasPrev: page > 1
       },
-      balanceSummary: {
-        totalFundImpact: logs.reduce((sum, log) => sum + (log.fundImpact || 0), 0),
-        averageFundBalance: logs.length > 0 ? logs.reduce((sum, log) => sum + (log.balancesAfter?.fundBalance || 0), 0) / logs.length : 0
+      memberStats: {
+        totalActivities: logs.length,
+        actionCounts
       }
     });
   } catch (error) {
