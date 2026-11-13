@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const Loan = require('../models/Loan');
 const User = require('../models/User');
@@ -373,221 +374,203 @@ router.patch('/:loanId/repayment/:repaymentId', authenticate, isAdmin, async (re
   }
 });
 
-// Add repayment to loan
-router.post('/:loanId/repayment', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { amount, date } = req.body;
-    const loan = await Loan.findById(req.params.loanId);
-    
-    if (!loan) {
-      return res.status(404).json({ message: 'Loan not found' });
-    }
+// Interest split plus principal repayment. Every money write uses the caller's session
+// so a failure rolls the loan, fund, member shares, and history back together.
+async function applyRepaymentInSession(loan, { repaymentAmount, date, session }) {
+  const paymentDate = date ? new Date(date) : new Date();
+  const interestAmount = Number(loan.outstanding || 0) * 0.01;
+  let memberCount = 0;
 
-    // Convert amount to number and validate
-    const repaymentAmount = Number(amount);
-    if (isNaN(repaymentAmount)) {
-      return res.status(400).json({ message: 'Invalid repayment amount' });
-    }
+  if (interestAmount > 0) {
+    const activeMembers = await User.find({ role: 'member', paused: false }).select('_id').session(session);
+    memberCount = activeMembers.length;
 
-    // Calculate 1% interest on the outstanding amount before repayment
-    const interestAmount = Number(loan.outstanding) * 0.01;
-    let interestDistributed = false;
+    if (memberCount > 0) {
+      const perMemberAmount = interestAmount / memberCount;
+      const earningsDistribution = new EarningsDistribution({
+        type: 'interest',
+        totalAmount: interestAmount,
+        perMemberAmount,
+        memberIds: activeMembers.map((member) => member._id),
+        refId: loan._id.toString()
+      });
+      await earningsDistribution.save({ session });
 
-    // If there's interest to distribute
-    let createdInterestPaymentId = null;
-    if (interestAmount > 0) {
-      // Get only active (non-paused) members
-      const activeMembers = await User.find({ role: 'member', paused: false });
-      
-      if (activeMembers.length > 0) {
-        // Store the full interest amount in earnings distribution
-        const earningsDistribution = new EarningsDistribution({
-          type: 'interest',
-          totalAmount: interestAmount,
-          perMemberAmount: interestAmount / activeMembers.length,
-          memberIds: activeMembers.map(m => m._id)
-        });
-        await earningsDistribution.save();
+      loan.interestPayments.push({
+        amount: interestAmount,
+        date: paymentDate,
+        distributionId: earningsDistribution._id
+      });
 
-        // Add interest payment record to the loan
-        const newInterestPayment = {
-          amount: interestAmount,
-          date: date ? new Date(date) : new Date(),
-          distributionId: earningsDistribution._id
-        };
-        loan.interestPayments.push(newInterestPayment);
-        createdInterestPaymentId = loan.interestPayments[loan.interestPayments.length - 1]._id;
+      const fund = await Fund.findOne().session(session);
+      if (fund) {
+        fund.totalFund = Number(fund.totalFund || 0) + interestAmount;
+        await fund.save({ session });
+      } else {
+        await new Fund({ totalFund: interestAmount }).save({ session });
+      }
 
-        // Update total fund with full interest amount
-        const fund = await Fund.findOne();
-        if (fund) {
-          fund.totalFund = Number(fund.totalFund || 0) + interestAmount;
-          await fund.save();
-        } else {
-          const newFund = new Fund({
-            totalFund: interestAmount
-          });
-          await newFund.save();
-        }
+      await User.updateMany(
+        { _id: { $in: activeMembers.map((member) => member._id) } },
+        { $inc: { interestEarned: perMemberAmount } },
+        { session }
+      );
 
-        // Update each member's investment balance with their share
-        const perMemberAmount = interestAmount / activeMembers.length;
-        for (const member of activeMembers) {
-          // Only update interestEarned, not investmentBalance
-          member.interestEarned = Number(member.interestEarned || 0) + perMemberAmount;
-          await member.save();
-
-          // Create investment history entry for each member
-          const memberHistory = new InvestmentHistory({
-            memberId: member._id,
-            amount: perMemberAmount,
-            type: 'interest',
-            refId: earningsDistribution._id.toString()
-          });
-          await memberHistory.save();
-        }
-        interestDistributed = true;
-        
-        // Log the interest distribution
-        await Logger.logInterestDistributed(interestAmount, activeMembers.length, req.user.userId);
+      const historyRows = activeMembers.map((member) => ({
+        memberId: member._id,
+        amount: perMemberAmount,
+        type: 'interest',
+        refId: earningsDistribution._id.toString()
+      }));
+      const chunkSize = 500;
+      for (let i = 0; i < historyRows.length; i += chunkSize) {
+        await InvestmentHistory.insertMany(historyRows.slice(i, i + chunkSize), { session });
       }
     }
+  }
 
-    // Add repayment to loan if amount is not 0
-    if (repaymentAmount > 0) {
-      loan.repayments.push({ amount: repaymentAmount, date: date ? new Date(date) : new Date(), interestPaymentId: createdInterestPaymentId || undefined });
-      
-      // Log the repayment transaction
-      await Logger.logRepayment(loan, repaymentAmount, req.user.userId);
+  const appliedRepayment = repaymentAmount > 0 ? repaymentAmount : 0;
+  if (appliedRepayment > 0) {
+    const interestPayment = loan.interestPayments[loan.interestPayments.length - 1];
+    loan.repayments.push({
+      amount: appliedRepayment,
+      date: paymentDate,
+      interestPaymentId: memberCount > 0 && interestAmount > 0 ? interestPayment?._id : undefined
+    });
+  }
+
+  const totalRepayments = loan.repayments.reduce((sum, repayment) => sum + Number(repayment.amount || 0), 0);
+  loan.outstanding = Math.max(0, Number(loan.amount) - totalRepayments);
+  if (loan.outstanding <= 0) {
+    loan.status = 'closed';
+  }
+  await loan.save({ session });
+
+  return {
+    loan,
+    interestAmount: memberCount > 0 ? interestAmount : 0,
+    memberCount,
+    appliedRepayment
+  };
+}
+
+async function logRepaymentEffects(effects, performedBy) {
+  for (const effect of effects) {
+    try {
+      if (effect.interestAmount > 0 && effect.memberCount > 0) {
+        await Logger.logInterestDistributed(effect.interestAmount, effect.memberCount, performedBy);
+      }
+      if (effect.appliedRepayment > 0) {
+        await Logger.logRepayment(effect.loan, effect.appliedRepayment, performedBy);
+      }
+    } catch (error) {
+      console.error('Loan update log error:', error);
     }
-    
-    // Calculate new outstanding amount - ensure all numbers are properly converted
-    const totalRepayments = loan.repayments.reduce((sum, r) => sum + Number(r.amount || 0), 0);
-    const newOutstanding = Math.max(0, Number(loan.amount) - totalRepayments);
-    loan.outstanding = newOutstanding;
-    
-    if (loan.outstanding <= 0) {
-      loan.status = 'closed';
-    }
-    
-    await loan.save();
-    res.status(200).json(loan);
+  }
+}
+
+// Add repayment to loan
+router.post('/:loanId/repayment', authenticate, isAdmin, async (req, res) => {
+  const { amount, date } = req.body;
+  const repaymentAmount = Number(amount);
+  if (isNaN(repaymentAmount)) {
+    return res.status(400).json({ message: 'Invalid repayment amount' });
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    let effect = null;
+    await session.withTransaction(async () => {
+      const loan = await Loan.findById(req.params.loanId).session(session);
+      if (!loan) {
+        const error = new Error('Loan not found');
+        error.statusCode = 404;
+        throw error;
+      }
+      effect = await applyRepaymentInSession(loan, { repaymentAmount, date, session });
+    });
+
+    await logRepaymentEffects([effect], req.user.userId);
+    res.status(200).json(effect.loan);
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     console.error('Repayment error:', error);
     res.status(500).json({ message: 'Server error' });
+  } finally {
+    session.endSession();
   }
 });
 
 // Repay across member's active loans (oldest first)
 router.post('/repay-member', authenticate, isAdmin, async (req, res) => {
+  const { memberId, amount, date } = req.body;
+  if (!memberId) {
+    return res.status(400).json({ message: 'memberId is required' });
+  }
+
+  const repaymentTotal = Number(amount || 0);
+  if (isNaN(repaymentTotal) || repaymentTotal < 0) {
+    return res.status(400).json({ message: 'Invalid amount' });
+  }
+
+  const session = await mongoose.startSession();
   try {
-    const { memberId, amount, date } = req.body;
-    if (!memberId) {
-      return res.status(400).json({ message: 'memberId is required' });
-    }
+    let effects = [];
+    let remainingUnapplied = repaymentTotal;
 
-    const repaymentTotal = Number(amount || 0);
-    if (isNaN(repaymentTotal) || repaymentTotal < 0) {
-      return res.status(400).json({ message: 'Invalid amount' });
-    }
-
-    // Fetch active loans for the member and sort oldest first
-    const loans = await Loan.find({ memberId, status: 'active' }).sort({ date: 1, _id: 1 });
-    if (!loans || loans.length === 0) {
-      return res.status(404).json({ message: 'No active loans found for this member' });
-    }
-
-    let remaining = repaymentTotal;
-    const updatedLoans = [];
-
-    for (const loan of loans) {
-      // 1) Distribute interest for this loan based on outstanding BEFORE applying repayment
-      const interestAmount = Number(loan.outstanding || 0) * 0.01;
-      let createdInterestPaymentId = null;
-      if (interestAmount > 0) {
-        const activeMembers = await User.find({ role: 'member', paused: false });
-        if (activeMembers.length > 0) {
-          const earningsDistribution = new EarningsDistribution({
-            type: 'interest',
-            totalAmount: interestAmount,
-            perMemberAmount: interestAmount / activeMembers.length,
-            memberIds: activeMembers.map(m => m._id),
-            refId: loan._id.toString()
-          });
-          await earningsDistribution.save();
-
-          loan.interestPayments.push({ amount: interestAmount, date: date ? new Date(date) : new Date(), distributionId: earningsDistribution._id });
-          createdInterestPaymentId = loan.interestPayments[loan.interestPayments.length - 1]._id;
-
-          // Update fund and members' interest earned
-          const fund = await Fund.findOne();
-          if (fund) {
-            fund.totalFund = Number(fund.totalFund || 0) + interestAmount;
-            await fund.save();
-          } else {
-            const newFund = new Fund({ totalFund: interestAmount });
-            await newFund.save();
-          }
-
-          const perMemberAmount = interestAmount / activeMembers.length;
-          for (const member of activeMembers) {
-            member.interestEarned = Number(member.interestEarned || 0) + perMemberAmount;
-            await member.save();
-            const memberHistory = new InvestmentHistory({
-              memberId: member._id,
-              amount: perMemberAmount,
-              type: 'interest',
-              refId: earningsDistribution._id.toString()
-            });
-            await memberHistory.save();
-          }
-
-          await Logger.logInterestDistributed(interestAmount, activeMembers.length, req.user.userId);
-        }
+    await session.withTransaction(async () => {
+      const loans = await Loan.find({ memberId, status: 'active' }).sort({ date: 1, _id: 1 }).session(session);
+      if (!loans || loans.length === 0) {
+        const error = new Error('No active loans found for this member');
+        error.statusCode = 404;
+        throw error;
       }
 
-      // 2) Apply allocated principal repayment for this loan (skip when 0)
-      const alloc = Math.max(0, Math.min(remaining, Number(loan.outstanding || 0)));
-      if (alloc > 0) {
-        loan.repayments.push({ amount: alloc, date: date ? new Date(date) : new Date(), interestPaymentId: createdInterestPaymentId || undefined });
-        await Logger.logRepayment(loan, alloc, req.user.userId);
+      let remaining = repaymentTotal;
+      const nextEffects = [];
+      for (const loan of loans) {
+        const alloc = Math.max(0, Math.min(remaining, Number(loan.outstanding || 0)));
+        nextEffects.push(await applyRepaymentInSession(loan, {
+          repaymentAmount: alloc,
+          date,
+          session
+        }));
+        remaining = Math.max(0, remaining - alloc);
       }
+      effects = nextEffects;
+      remainingUnapplied = remaining;
+    });
 
-      // 3) Recompute outstanding and status
-      const totalRepayments = loan.repayments.reduce((sum, r) => sum + Number(r.amount || 0), 0);
-      loan.outstanding = Math.max(0, Number(loan.amount) - totalRepayments);
-      if (loan.outstanding <= 0) loan.status = 'closed';
+    await logRepaymentEffects(effects, req.user.userId);
 
-      await loan.save();
-      updatedLoans.push(loan);
-
-      // Reduce remaining after applying alloc
-      remaining = Math.max(0, remaining - alloc);
-    }
-
-    // Build breakdown response
-    const breakdown = updatedLoans.map(l => ({
-      loanId: l._id,
-      originalAmount: l.amount,
-      outstanding: l.outstanding,
-      interestThisCycle: Number(l.interestPayments?.[l.interestPayments.length - 1]?.date) >= 0
-        ? Number(l.interestPayments?.[l.interestPayments.length - 1]?.amount || 0)
-        : 0
+    const updatedLoans = effects.map((effect) => effect.loan);
+    const breakdown = effects.map((effect) => ({
+      loanId: effect.loan._id,
+      originalAmount: effect.loan.amount,
+      outstanding: effect.loan.outstanding,
+      interestThisCycle: effect.interestAmount
     }));
-    const totalInterest = breakdown.reduce((s, b) => s + Number(b.interestThisCycle || 0), 0);
-    const totalOutstanding = updatedLoans.reduce((s, l) => s + Number(l.outstanding || 0), 0);
+    const totalInterest = breakdown.reduce((sum, row) => sum + Number(row.interestThisCycle || 0), 0);
+    const totalOutstanding = updatedLoans.reduce((sum, loan) => sum + Number(loan.outstanding || 0), 0);
 
     res.status(200).json({
       appliedRepayment: repaymentTotal,
-      remainingUnapplied: remaining,
+      remainingUnapplied,
       totalInterest,
       totalOutstanding,
       loans: updatedLoans,
       breakdown
     });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
     console.error('repay-member error:', error);
     res.status(500).json({ message: 'Server error' });
+  } finally {
+    session.endSession();
   }
 });
 
